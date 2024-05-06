@@ -34,24 +34,24 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
 
 std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
-	const torch::Tensor& background,
-	const torch::Tensor& means3D,
-    const torch::Tensor& colors,
-    const torch::Tensor& opacity,
-	const torch::Tensor& scales,
-	const torch::Tensor& rotations,
+	const torch::Tensor& background, //[3]
+	const torch::Tensor& means3D, //[P,3]
+    const torch::Tensor& colors, //color_precompute, empty
+    const torch::Tensor& opacity, //[P,1]
+	const torch::Tensor& scales, //[P,3]
+	const torch::Tensor& rotations, //[P,4]
 	const float scale_modifier,
-	const torch::Tensor& cov3D_precomp,
-	const torch::Tensor& viewmatrix,
-	const torch::Tensor& projmatrix,
+	const torch::Tensor& cov3D_precomp, // empty
+	const torch::Tensor& viewmatrix, // transpose, [4,4]
+	const torch::Tensor& projmatrix, // transpose, [4,4]
 	const float tan_fovx, 
 	const float tan_fovy,
     const int image_height,
     const int image_width,
-	const torch::Tensor& sh,
-	const int degree,
-	const torch::Tensor& campos,
-	const bool prefiltered,
+	const torch::Tensor& sh, //[P,16,3]
+	const int degree, //active_sh_degree
+	const torch::Tensor& campos, //camera posistion
+	const bool prefiltered, //false
 	const bool debug)
 {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {

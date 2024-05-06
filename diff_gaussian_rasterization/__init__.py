@@ -208,14 +208,14 @@ class GaussianRasterizer(nn.Module):
 
         # Invoke C++/CUDA rasterization routine
         return rasterize_gaussians(
-            means3D,
-            means2D,
-            shs,
-            colors_precomp,
-            opacities,
-            scales, 
-            rotations,
-            cov3D_precomp,
+            means3D, #[P,3]
+            means2D, #output
+            shs, #[P,16,3]
+            colors_precomp, #none
+            opacities, #[P,1]
+            scales,  #[P,3]
+            rotations, #[P,4]
+            cov3D_precomp, #none
             raster_settings, 
         )
 

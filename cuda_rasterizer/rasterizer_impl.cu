@@ -215,14 +215,14 @@ int CudaRasterizer::Rasterizer::forward(
 	const float* cam_pos,
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
-	float* out_color,
-	int* radii,
+	float* out_color, //output
+	int* radii, //output
 	bool debug)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
 
-	size_t chunk_size = required<GeometryState>(P);
+	size_t chunk_size = required<GeometryState>(P); //每个高斯一个
 	char* chunkptr = geometryBuffer(chunk_size);
 	GeometryState geomState = GeometryState::fromChunk(chunkptr, P);
 
@@ -231,11 +231,11 @@ int CudaRasterizer::Rasterizer::forward(
 		radii = geomState.internal_radii;
 	}
 
-	dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
+	dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1); //分块，每块16x16
 	dim3 block(BLOCK_X, BLOCK_Y, 1);
 
 	// Dynamically resize image-based auxiliary buffers during training
-	size_t img_chunk_size = required<ImageState>(width * height);
+	size_t img_chunk_size = required<ImageState>(width * height); //每个像素一个
 	char* img_chunkptr = imageBuffer(img_chunk_size);
 	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height);
 
