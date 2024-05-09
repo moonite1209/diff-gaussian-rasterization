@@ -38,7 +38,7 @@ namespace CudaRasterizer
 		float4* conic_opacity; //[P,1], float4, packed(2D covariance, opacity)
 		float* rgb; //[P,3]
 		uint32_t* point_offsets; //[P,1]
-		uint32_t* tiles_touched; //[P,1]
+		uint32_t* tiles_touched; //[P,1] 覆盖的tiles的数量
 
 		static GeometryState fromChunk(char*& chunk, size_t P);
 	};
@@ -54,12 +54,12 @@ namespace CudaRasterizer
 
 	struct BinningState
 	{
-		size_t sorting_size;
-		uint64_t* point_list_keys_unsorted;
-		uint64_t* point_list_keys;
-		uint32_t* point_list_unsorted;
-		uint32_t* point_list;
-		char* list_sorting_space;
+		size_t sorting_size; // 存储用于排序操作的缓冲区大小
+		uint64_t* point_list_keys_unsorted; // 未排序的键列表
+		uint64_t* point_list_keys; // 排序后的键列表
+		uint32_t* point_list_unsorted; // 未排序的点列表
+		uint32_t* point_list; // 排序后的点列表
+		char* list_sorting_space; // 用于排序操作的缓冲区
 
 		static BinningState fromChunk(char*& chunk, size_t P);
 	};

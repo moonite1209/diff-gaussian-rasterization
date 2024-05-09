@@ -77,6 +77,7 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 	// and 31 in "EWA Splatting" (Zwicker et al., 2002). 
 	// Additionally considers aspect / scaling of viewport.
 	// Transposes used to account for row-/column-major conventions.
+	// 将当前3D gaussian的中心点从世界坐标系投影到相机坐标系
 	float3 t = transformPoint4x3(mean, viewmatrix);
 
 	const float limx = 1.3f * tan_fovx;
@@ -86,6 +87,7 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 	t.x = min(limx, max(-limx, txtz)) * t.z;
 	t.y = min(limy, max(-limy, tytz)) * t.z;
 
+	// 透视变换是非线性的，因为一个点的屏幕空间坐标与其深度（Z值）成非线性关系。雅可比矩阵 J 提供了一个在特定点附近的线性近似，这使得计算变得简单且高效
 	glm::mat3 J = glm::mat3(
 		focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z),
 		0.0f, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z),
@@ -179,6 +181,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	uint32_t* tiles_touched,
 	bool prefiltered)
 {
+	// 每个线程处理一个3D gaussian, index超过3D gaussian总数的线程直接返回, 防止数组越界访问
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
 		return;
@@ -189,7 +192,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	tiles_touched[idx] = 0;
 
 	// Perform near culling, quit if outside.
-	float3 p_view;
+	float3 p_view; // 用于存储将 p_orig 通过视图矩阵 viewmatrix 转换到视图空间后的点坐标
+	// 判断当前处理的3D gaussian的中心点(均值XYZ)是否在视锥（frustum）内, 如果不在则直接返回
 	if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view)) //p_view.z <= 0.2f, return
 		return;
 
@@ -212,9 +216,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		cov3D = cov3Ds + idx * 6;
 	}
 
+	// 将当前的3D gaussian投影到2D图像，得到对应的2D gaussian的协方差矩阵cov
 	// Compute 2D screen-space covariance matrix
 	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
 
+	// 计算当前2D gaussian的协方差矩阵cov的逆矩阵
 	// Invert covariance (EWA algorithm)
 	float det = (cov.x * cov.z - cov.y * cov.y);
 	if (det == 0.0f)
@@ -222,6 +228,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float det_inv = 1.f / det;
 	float3 conic = { cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv };
 
+	// 计算2D gaussian的协方差矩阵cov的特征值lambda1, lambda2, 从而计算2D gaussian的最大半径
+    // 对协方差矩阵进行特征值分解时，可以得到描述分布形状的主轴（特征向量）以及这些轴上分布的宽度（特征值）
 	// Compute extent in screen space (by finding eigenvalues of
 	// 2D covariance matrix). Use extent to compute a bounding rectangle
 	// of screen-space tiles that this Gaussian overlaps with. Quit if
@@ -232,14 +240,15 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
-	getRect(point_image, my_radius, rect_min, rect_max, grid);
-	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
+	getRect(point_image, my_radius, rect_min, rect_max, grid); // 计算当前的2D gaussian落在哪几个tile上
+	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0) // 如果没有命中任何一个title则直接返回
 		return;
 
 	// If colors have been precomputed, use them, otherwise convert
 	// spherical harmonics coefficients to RGB color.
 	if (colors_precomp == nullptr)
 	{
+		// 从每个3D gaussian对应的球谐系数中计算对应的颜色
 		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
 		rgb[idx * C + 0] = result.x;
 		rgb[idx * C + 1] = result.y;
@@ -275,11 +284,11 @@ renderCUDA(
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
-	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
-	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
-	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
-	uint32_t pix_id = W * pix.y + pix.x;
-	float2 pixf = { (float)pix.x, (float)pix.y };
+	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y }; // 当前处理的tile的左上角的像素坐标
+	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) }; // 当前处理的tile的右下角的像素坐标
+	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y }; // 当前处理的像素坐标
+	uint32_t pix_id = W * pix.y + pix.x; // 当前处理的像素id
+	float2 pixf = { (float)pix.x, (float)pix.y }; // 当前处理的像素坐标
 
 	// Check if this thread is associated with a valid pixel or outside.
 	bool inside = pix.x < W&& pix.y < H;
@@ -287,9 +296,10 @@ renderCUDA(
 	bool done = !inside;
 
 	// Load start/end range of IDs to process in bit sorted list.
+	// 当前处理的tile对应的3D gaussian的起始id和结束id
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
-	int toDo = range.y - range.x;
+	int toDo = range.y - range.x; // 还有多少3D gaussian需要处理
 
 	// Allocate storage for batches of collectively fetched data.
 	__shared__ int collected_id[BLOCK_SIZE];
@@ -314,7 +324,7 @@ renderCUDA(
 		int progress = i * BLOCK_SIZE + block.thread_rank();
 		if (range.x + progress < range.y)
 		{
-			int coll_id = point_list[range.x + progress];
+			int coll_id = point_list[range.x + progress]; // 当前处理的3D gaussian的id
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
@@ -329,10 +339,10 @@ renderCUDA(
 
 			// Resample using conic matrix (cf. "Surface 
 			// Splatting" by Zwicker et al., 2001)
-			float2 xy = collected_xy[j];
-			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
-			float4 con_o = collected_conic_opacity[j];
-			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+			float2 xy = collected_xy[j]; // 当前处理的2D gaussian在图像上的中心点坐标
+			float2 d = { xy.x - pixf.x, xy.y - pixf.y }; // 当前处理的2D gaussian的中心点到当前处理的pixel的offset
+			float4 con_o = collected_conic_opacity[j]; // 当前处理的2D gaussian的协方差矩阵的逆矩阵以及它的不透明度
+			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y; // 计算高斯分布的强度（或权重），用于确定像素在光栅化过程中的贡献程度
 			if (power > 0.0f)
 				continue;
 
@@ -366,8 +376,8 @@ renderCUDA(
 	// rendering data to the frame and auxiliary buffers.
 	if (inside)
 	{
-		final_T[pix_id] = T;
-		n_contrib[pix_id] = last_contributor;
+		final_T[pix_id] = T; // 渲染过程后每个像素的最终透明度或透射率值
+		n_contrib[pix_id] = last_contributor; // 最后一个贡献的2D gaussian是谁
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 	}
@@ -387,16 +397,16 @@ void FORWARD::render(
 	float* out_color)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
-		ranges,
-		point_list,
-		W, H,
-		means2D,
-		colors,
-		conic_opacity,
-		final_T,
-		n_contrib,
-		bg_color,
-		out_color);
+        ranges,             // 每个瓦片（tile）在排序后的高斯ID列表中的范围
+        point_list,         // 排序后的3D gaussian的id列表
+        W, H,               // 图像的宽和高
+        means2D,            // 每个2D gaussian在图像上的中心点位置
+        colors,             // 每个3D gaussian对应的RGB颜色
+        conic_opacity,      // 每个2D gaussian的协方差矩阵的逆矩阵以及它的不透明度
+        final_T,            // 渲染过程后每个像素的最终透明度或透射率值
+        n_contrib,          // 每个pixel的最后一个贡献的2D gaussian是谁
+        bg_color,           // 背景颜色
+        out_color);         // 输出图像
 }
 
 void FORWARD::preprocess(int P, int D, int M,
@@ -426,30 +436,30 @@ void FORWARD::preprocess(int P, int D, int M,
 	bool prefiltered)
 {
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
-		P, D, M,
-		means3D,
-		scales,
-		scale_modifier,
-		rotations,
-		opacities,
-		shs,
-		clamped,
-		cov3D_precomp,
-		colors_precomp,
-		viewmatrix, 
-		projmatrix,
-		cam_pos,
-		W, H,
-		tan_fovx, tan_fovy,
-		focal_x, focal_y,
-		radii,
-		means2D,
-		depths,
-		cov3Ds,
-		rgb,
-		conic_opacity,
-		grid,
-		tiles_touched,
-		prefiltered
-		);
+        P, D, M,               // 3D gaussian的个数, 球谐函数的次数, 球谐系数的个数 (球谐系数用于表示颜色)
+        means3D,               // 每个3D gaussian的XYZ均值
+        scales,                // 每个3D gaussian的XYZ尺度
+        scale_modifier,        // 尺度缩放系数, 1.0
+        rotations,             // 每个3D gaussian的旋转四元组
+        opacities,             // 每个3D gaussian的不透明度
+        shs,                   // 每个3D gaussian的球谐系数, 用于表示颜色
+        clamped,               // 存储每个3D gaussian的R、G、B是否小于0
+        cov3D_precomp,         // 提前计算好的每个3D gaussian的协方差矩阵, []
+        colors_precomp,        // 提前计算好的每个3D gaussian的颜色, []
+        viewmatrix,            // 相机外参矩阵, world to camera
+        projmatrix,            // 投影矩阵, world to image
+        cam_pos,               // 所有相机的中心点XYZ坐标
+        W, H,                  // 图像的宽和高
+        tan_fovx, tan_fovy,    // 水平、垂直视场角一半的正切值
+        focal_x, focal_y,      // 水平、垂直方向的焦距
+        radii,                 // 存储每个2D gaussian在图像上的半径
+        means2D,               // 存储每个2D gaussian的均值
+        depths,                // 存储每个2D gaussian的深度
+        cov3Ds,                // 存储每个3D gaussian的协方差矩阵
+        rgb,                   // 存储每个2D pixel的颜色
+        conic_opacity,         // 存储每个2D gaussian的协方差矩阵的逆矩阵以及它的不透明度
+        grid,                  // 在水平和垂直方向上需要多少个tile来覆盖整个渲染区域
+        tiles_touched,         // 存储每个2D gaussian覆盖了多少个tile
+        prefiltered            // 是否预先过滤掉了中心点(均值XYZ)不在视锥（frustum）内的3D gaussian
+        );
 }

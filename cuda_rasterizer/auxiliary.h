@@ -145,11 +145,12 @@ __forceinline__ __device__ bool in_frustum(int idx,
 {
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 
+	// 将当前3D gaussian的中心点投影到归一化设备坐标系 (NDC)
 	// Bring points to screen space
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
-	p_view = transformPoint4x3(p_orig, viewmatrix);
+	p_view = transformPoint4x3(p_orig, viewmatrix); // 将当前3D gaussian的中心点投影到相机坐标系
 
 	if (p_view.z <= 0.2f)// || ((p_proj.x < -1.3 || p_proj.x > 1.3 || p_proj.y < -1.3 || p_proj.y > 1.3)))
 	{

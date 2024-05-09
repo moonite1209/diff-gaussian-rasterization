@@ -185,6 +185,7 @@ CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chun
 	obtain(chunk, binning.point_list_unsorted, P, 128);
 	obtain(chunk, binning.point_list_keys, P, 128);
 	obtain(chunk, binning.point_list_keys_unsorted, P, 128);
+	// 在 GPU 上进行基数排序, 将 point_list_keys_unsorted 作为键，point_list_unsorted 作为值进行排序，排序结果存储在 point_list_keys 和 point_list 中
 	cub::DeviceRadixSort::SortPairs(
 		nullptr, binning.sorting_size,
 		binning.point_list_keys_unsorted, binning.point_list_keys,
@@ -277,13 +278,16 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
 
 	// Retrieve total number of Gaussian instances to launch and resize aux buffers
-	int num_rendered;
+	int num_rendered; // 存储所有的2D gaussian总共覆盖了多少个tile
+	// 将 geomState.point_offsets 数组中最后一个元素的值复制到主机内存中的变量 num_rendered
 	CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
 
 	size_t binning_chunk_size = required<BinningState>(num_rendered);
 	char* binning_chunkptr = binningBuffer(binning_chunk_size);
 	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered);
 
+	// 将每个3D gaussian的对应的tile index和深度存到point_list_keys_unsorted中
+    // 将每个3D gaussian的对应的index（第几个3D gaussian）存到point_list_unsorted中
 	// For each instance to be rendered, produce adequate [ tile | depth ] key 
 	// and corresponding dublicated Gaussian indices to be sorted
 	duplicateWithKeys << <(P + 255) / 256, 256 >> > (
@@ -299,6 +303,10 @@ int CudaRasterizer::Rasterizer::forward(
 
 	int bit = getHigherMsb(tile_grid.x * tile_grid.y);
 
+	// 对一个键值对列表进行排序。这里的键值对由 binningState.point_list_keys_unsorted 和 binningState.point_list_unsorted 组成
+    // 排序后的结果存储在 binningState.point_list_keys 和 binningState.point_list 中
+    // binningState.list_sorting_space 和 binningState.sorting_size 指定了排序操作所需的临时存储空间和其大小
+    // num_rendered 是要排序的元素总数。0, 32 + bit 指定了排序的最低位和最高位，这里用于确保排序考虑到了足够的位数，以便正确处理所有的键值对
 	// Sort complete list of (duplicated) Gaussian indices by keys
 	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
 		binningState.list_sorting_space,
@@ -307,8 +315,11 @@ int CudaRasterizer::Rasterizer::forward(
 		binningState.point_list_unsorted, binningState.point_list,
 		num_rendered, 0, 32 + bit), debug)
 
+	// 将 imgState.ranges 数组中的所有元素设置为 0
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
+	// 识别每个瓦片（tile）在排序后的高斯ID列表中的范围
+    // 目的是确定哪些高斯ID属于哪个瓦片，并记录每个瓦片的开始和结束位置
 	// Identify start and end of per-tile workloads in sorted list
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
@@ -320,17 +331,18 @@ int CudaRasterizer::Rasterizer::forward(
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
 	CHECK_CUDA(FORWARD::render(
-		tile_grid, block,
-		imgState.ranges,
-		binningState.point_list,
-		width, height,
-		geomState.means2D,
-		feature_ptr,
-		geomState.conic_opacity,
-		imgState.accum_alpha,
-		imgState.n_contrib,
-		background,
-		out_color), debug)
+		tile_grid, // 在水平和垂直方向上需要多少个块来覆盖整个渲染区域
+		block, // 每个块在 X（水平）和 Y（垂直）方向上的线程数
+		imgState.ranges, // 每个瓦片（tile）在排序后的高斯ID列表中的范围
+		binningState.point_list, // 排序后的3D gaussian的id列表
+		width, height, // 图像的宽和高
+		geomState.means2D, // 每个2D gaussian在图像上的中心点位置
+		feature_ptr, // 每个3D gaussian对应的RGB颜色
+		geomState.conic_opacity, // 每个2D gaussian的协方差矩阵的逆矩阵以及它的不透明度
+		imgState.accum_alpha, // 渲染过程后每个像素的最终透明度或透射率值
+		imgState.n_contrib, // 每个pixel的最后一个贡献的2D gaussian是谁
+		background, // 背景颜色
+		out_color), debug)  // 输出图像
 
 	return num_rendered;
 }
