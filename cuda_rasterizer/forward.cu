@@ -241,7 +241,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
 	getRect(point_image, my_radius, rect_min, rect_max, grid); // 计算当前的2D gaussian落在哪几个tile上
-	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0) // 如果没有命中任何一个title则直接返回
+	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0) // 如果没有命中任何一个tile则直接返回
 		return;
 
 	// If colors have been precomputed, use them, otherwise convert
