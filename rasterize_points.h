@@ -66,7 +66,7 @@ torch::Tensor markVisible(
 	torch::Tensor& viewmatrix,
 	torch::Tensor& projmatrix);
 
-std::tuple<torch::Tensor, torch::Tensor>
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 get_max_contributor(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,

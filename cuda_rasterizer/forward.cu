@@ -296,8 +296,7 @@ renderCUDA(
 	bool done = !inside;
 
 	// Load start/end range of IDs to process in bit sorted list.
-	// 当前处理的tile对应的3D gaussian的起始id和结束id
-	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x]; // 当前处理的tile对应的3D gaussian的起始id和结束id
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 	int toDo = range.y - range.x; // 还有多少3D gaussian需要处理
 
@@ -316,7 +315,7 @@ renderCUDA(
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// End if entire block votes that it is done rasterizing
-		int num_done = __syncthreads_count(done);
+		int num_done = __syncthreads_count(done); // 同步block中的线程
 		if (num_done == BLOCK_SIZE)
 			break;
 
@@ -329,7 +328,7 @@ renderCUDA(
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
 		}
-		block.sync();
+		block.sync(); // 同步block中的线程
 
 		// Iterate over current batch
 		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
@@ -434,32 +433,179 @@ void FORWARD::preprocess(int P, int D, int M,
 	const dim3 grid,
 	uint32_t* tiles_touched,
 	bool prefiltered)
-{
-	preprocessCUDA<NUM_CHANNELS> <<<(P + 255) / 256, 256 >>> (
-        P, D, M,               // 3D gaussian的个数, 球谐函数的次数, 球谐系数的个数 (球谐系数用于表示颜色)
-        means3D,               // 每个3D gaussian的XYZ均值
-        scales,                // 每个3D gaussian的XYZ尺度
-        scale_modifier,        // 尺度缩放系数, 1.0
-        rotations,             // 每个3D gaussian的旋转四元组
-        opacities,             // 每个3D gaussian的不透明度
-        shs,                   // 每个3D gaussian的球谐系数, 用于表示颜色
-        clamped,               // 存储每个3D gaussian的R、G、B是否小于0
-        cov3D_precomp,         // 提前计算好的每个3D gaussian的协方差矩阵, []
-        colors_precomp,        // 提前计算好的每个3D gaussian的颜色, []
-        viewmatrix,            // 相机外参矩阵, world to camera
-        projmatrix,            // 投影矩阵, world to image
-        cam_pos,               // 所有相机的中心点XYZ坐标
-        W, H,                  // 图像的宽和高
-        tan_fovx, tan_fovy,    // 水平、垂直视场角一半的正切值
-        focal_x, focal_y,      // 水平、垂直方向的焦距
-        radii,                 // 存储每个2D gaussian在图像上的半径
-        means2D,               // 存储每个2D gaussian的均值
-        depths,                // 存储每个2D gaussian的深度
-        cov3Ds,                // 存储每个3D gaussian的协方差矩阵
-        rgb,                   // 存储每个2D pixel的颜色
-        conic_opacity,         // 存储每个2D gaussian的协方差矩阵的逆矩阵以及它的不透明度
-        grid,                  // 在水平和垂直方向上需要多少个tile来覆盖整个渲染区域
-        tiles_touched,         // 存储每个2D gaussian覆盖了多少个tile
-        prefiltered            // 是否预先过滤掉了中心点(均值XYZ)不在视锥（frustum）内的3D gaussian
+	{
+		preprocessCUDA<NUM_CHANNELS> <<<(P + 255) / 256, 256 >>> (
+			P, D, M,               // 3D gaussian的个数, 球谐函数的次数, 球谐系数的个数 (球谐系数用于表示颜色)
+			means3D,               // 每个3D gaussian的XYZ均值
+			scales,                // 每个3D gaussian的XYZ尺度
+			scale_modifier,        // 尺度缩放系数, 1.0
+			rotations,             // 每个3D gaussian的旋转四元组
+			opacities,             // 每个3D gaussian的不透明度
+			shs,                   // 每个3D gaussian的球谐系数, 用于表示颜色
+			clamped,               // 存储每个3D gaussian的R、G、B是否小于0
+			cov3D_precomp,         // 提前计算好的每个3D gaussian的协方差矩阵, []
+			colors_precomp,        // 提前计算好的每个3D gaussian的颜色, []
+			viewmatrix,            // 相机外参矩阵, world to camera
+			projmatrix,            // 投影矩阵, world to image
+			cam_pos,               // 所有相机的中心点XYZ坐标
+			W, H,                  // 图像的宽和高
+			tan_fovx, tan_fovy,    // 水平、垂直视场角一半的正切值
+			focal_x, focal_y,      // 水平、垂直方向的焦距
+			radii,                 // 存储每个2D gaussian在图像上的半径
+			means2D,               // 存储每个2D gaussian的均值
+			depths,                // 存储每个2D gaussian的深度
+			cov3Ds,                // 存储每个3D gaussian的协方差矩阵
+			rgb,                   // 存储每个2D pixel的颜色
+			conic_opacity,         // 存储每个2D gaussian的协方差矩阵的逆矩阵以及它的不透明度
+			grid,                  // 在水平和垂直方向上需要多少个tile来覆盖整个渲染区域
+			tiles_touched,         // 存储每个2D gaussian覆盖了多少个tile
+			prefiltered            // 是否预先过滤掉了中心点(均值XYZ)不在视锥（frustum）内的3D gaussian
         );
+	}
+
+// Main rasterization method. Collaboratively works on one tile per
+// block, each thread treats one pixel. Alternates between fetching 
+// and rasterizing data.
+__global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
+get_max_contributorCUDA(
+	const uint2* __restrict__ ranges,
+	const uint32_t* __restrict__ point_list,
+	int W, int H,
+	const float2* __restrict__ points_xy_image,
+	const float* __restrict__ features,
+	const float4* __restrict__ conic_opacity,
+	float* __restrict__ final_T,
+	uint32_t* __restrict__ n_contrib,
+	const float* __restrict__ bg_color,
+	int* __restrict__ max_contributor,
+	float* __restrict__ max_contribute){
+	// Identify current tile and associated min/max pixel range.
+	auto block = cg::this_thread_block();
+	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y }; // 当前处理的tile的左上角的像素坐标
+	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) }; // 当前处理的tile的右下角的像素坐标
+	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y }; // 当前处理的像素坐标
+	uint32_t pix_id = W * pix.y + pix.x; // 当前处理的像素id
+	float2 pixf = { (float)pix.x, (float)pix.y }; // 当前处理的像素坐标
+
+	// Check if this thread is associated with a valid pixel or outside.
+	bool inside = pix.x < W&& pix.y < H;
+	// Done threads can help with fetching, but don't rasterize
+	bool done = !inside;
+
+	// Load start/end range of IDs to process in bit sorted list.
+	// 当前处理的tile对应的3D gaussian的起始id和结束id
+	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+	int toDo = range.y - range.x; // 还有多少3D gaussian需要处理
+
+	// Allocate storage for batches of collectively fetched data.
+	__shared__ int collected_id[BLOCK_SIZE];
+	__shared__ float2 collected_xy[BLOCK_SIZE];
+	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+
+	// Initialize helper variables
+	float T = 1.0f;
+	uint32_t contributor = 0;
+	uint32_t last_contributor = 0;
+	int32_t max_id = -1;
+	float max_weight = 0.0;
+
+	// Iterate over batches until all done or range is complete
+	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+	{
+		// End if entire block votes that it is done rasterizing
+		int num_done = __syncthreads_count(done);
+		if (num_done == BLOCK_SIZE)
+			break;
+
+		// Collectively fetch per-Gaussian data from global to shared
+		int progress = i * BLOCK_SIZE + block.thread_rank();
+		if (range.x + progress < range.y)
+		{
+			int coll_id = point_list[range.x + progress]; // 当前处理的3D gaussian的id
+			collected_id[block.thread_rank()] = coll_id;
+			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+		}
+		block.sync();
+
+		// Iterate over current batch
+		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
+		{
+			// Keep track of current position in range
+			contributor++;
+
+			// Resample using conic matrix (cf. "Surface 
+			// Splatting" by Zwicker et al., 2001)
+			float2 xy = collected_xy[j]; // 当前处理的2D gaussian在图像上的中心点坐标
+			float2 d = { xy.x - pixf.x, xy.y - pixf.y }; // 当前处理的2D gaussian的中心点到当前处理的pixel的offset
+			float4 con_o = collected_conic_opacity[j]; // 当前处理的2D gaussian的协方差矩阵的逆矩阵以及它的不透明度
+			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y; // 计算高斯分布的强度（或权重），用于确定像素在光栅化过程中的贡献程度
+			if (power > 0.0f)
+				continue;
+
+			// Eq. (2) from 3D Gaussian splatting paper.
+			// Obtain alpha by multiplying with Gaussian opacity
+			// and its exponential falloff from mean.
+			// Avoid numerical instabilities (see paper appendix). 
+			float alpha = min(0.99f, con_o.w * exp(power));
+			if (alpha < 1.0f / 255.0f)
+				continue;
+			float test_T = T * (1 - alpha);
+			if (test_T < 0.0001f)
+			{
+				done = true;
+				continue;
+			}
+			
+			if(alpha * T > max_weight){
+				max_weight = alpha*T;
+				max_id = collected_id[j];
+			}
+
+			T = test_T;
+
+			// Keep track of last range entry to update this
+			// pixel.
+			last_contributor = contributor;
+		}
+	}
+
+	// All threads that treat valid pixel write out their final
+	// rendering data to the frame and auxiliary buffers.
+	if (inside)
+	{
+		final_T[pix_id] = T; // 渲染过程后每个像素的最终透明度或透射率值
+		n_contrib[pix_id] = last_contributor; // 最后一个贡献的2D gaussian是谁
+		max_contributor[pix_id] = max_id;
+		max_contribute[pix_id] = max_weight;
+	}
+}
+
+void FORWARD::get_max_contributor(
+	const dim3 grid, dim3 block,
+	const uint2* ranges,
+	const uint32_t* point_list,
+	int W, int H,
+	const float2* means2D,
+	const float* colors,
+	const float4* conic_opacity,
+	float* final_T,
+	uint32_t* n_contrib,
+	const float* bg_color,
+	int* max_contributor,
+	float* max_contribute){
+	get_max_contributorCUDA<<<grid, block >>> (
+		ranges,             // 每个瓦片（tile）在排序后的高斯ID列表中的范围
+		point_list,         // 排序后的3D gaussian的id列表
+		W, H,               // 图像的宽和高
+		means2D,            // 每个2D gaussian在图像上的中心点位置
+		colors,             // 每个3D gaussian对应的RGB颜色
+		conic_opacity,      // 每个2D gaussian的协方差矩阵的逆矩阵以及它的不透明度
+		final_T,            // 渲染过程后每个像素的最终透明度或透射率值
+		n_contrib,          // 每个pixel的最后一个贡献的2D gaussian是谁
+		bg_color,           // 背景颜色
+		max_contributor,
+		max_contribute);
 }
