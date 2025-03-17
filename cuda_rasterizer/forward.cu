@@ -396,7 +396,7 @@ void FORWARD::render(
 	const float* bg_color,
 	float* out_color)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
+	renderCUDA<NUM_CHANNELS> <<<grid, block >>> (
         ranges,             // 每个瓦片（tile）在排序后的高斯ID列表中的范围
         point_list,         // 排序后的3D gaussian的id列表
         W, H,               // 图像的宽和高
@@ -435,7 +435,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	uint32_t* tiles_touched,
 	bool prefiltered)
 {
-	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
+	preprocessCUDA<NUM_CHANNELS> <<<(P + 255) / 256, 256 >>> (
         P, D, M,               // 3D gaussian的个数, 球谐函数的次数, 球谐系数的个数 (球谐系数用于表示颜色)
         means3D,               // 每个3D gaussian的XYZ均值
         scales,                // 每个3D gaussian的XYZ尺度
