@@ -145,7 +145,7 @@ void CudaRasterizer::Rasterizer::markVisible(
 	float* projmatrix,
 	bool* present)
 {
-	checkFrustum << <(P + 255) / 256, 256 >> > (
+	checkFrustum <<<(P + 255) / 256, 256 >>> (
 		P,
 		means3D,
 		viewmatrix, projmatrix,
@@ -290,7 +290,7 @@ int CudaRasterizer::Rasterizer::forward(
     // 将每个3D gaussian的对应的index（第几个3D gaussian）存到point_list_unsorted中
 	// For each instance to be rendered, produce adequate [ tile | depth ] key 
 	// and corresponding dublicated Gaussian indices to be sorted
-	duplicateWithKeys << <(P + 255) / 256, 256 >> > (
+	duplicateWithKeys <<<(P + 255) / 256, 256 >>> (
 		P,
 		geomState.means2D,
 		geomState.depths,
@@ -322,7 +322,7 @@ int CudaRasterizer::Rasterizer::forward(
     // 目的是确定哪些高斯ID属于哪个瓦片，并记录每个瓦片的开始和结束位置
 	// Identify start and end of per-tile workloads in sorted list
 	if (num_rendered > 0)
-		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
+		identifyTileRanges <<<(num_rendered + 255) / 256, 256 >>> (
 			num_rendered,
 			binningState.point_list_keys,
 			imgState.ranges);
