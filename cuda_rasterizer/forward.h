@@ -20,6 +20,12 @@
 
 namespace FORWARD
 {
+	glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped);
+
+	float3 computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix);
+
+	void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 rot, float* cov3D);
+
 	// Perform initial steps for each Gaussian prior to rasterization.
 	void preprocess(int P, int D, int M,
 		const float* orig_points,

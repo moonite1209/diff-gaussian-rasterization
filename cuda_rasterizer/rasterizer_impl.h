@@ -16,6 +16,26 @@
 #include "rasterizer.h"
 #include <cuda_runtime_api.h>
 
+uint32_t getHigherMsb(uint32_t n);
+
+__global__ void checkFrustum(int P,
+	const float* orig_points,
+	const float* viewmatrix,
+	const float* projmatrix,
+	bool* present);
+
+__global__ void duplicateWithKeys(
+	int P,
+	const float2* points_xy,
+	const float* depths,
+	const uint32_t* offsets,
+	uint64_t* gaussian_keys_unsorted,
+	uint32_t* gaussian_values_unsorted,
+	int* radii,
+	dim3 grid);
+
+__global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* ranges);
+
 namespace CudaRasterizer
 {
 	template <typename T>
